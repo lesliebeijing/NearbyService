@@ -34,5 +34,5 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_marginTop="50dp"
-        android:text="author:青岛房老师 lesliefang 简书:https://www.jianshu.com/u/59bd8b2792ac\t\tfl_beijing@126.com" />
+        android:text="author:头条@青岛房老师 lesliefang 简书:https://www.jianshu.com/u/59bd8b2792ac\t\tfl_beijing@126.com" />
 </LinearLayout>
