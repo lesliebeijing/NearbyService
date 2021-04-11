@@ -41,7 +41,8 @@ dependencies {
     androidTestImplementation 'androidx.test.espresso:espresso-core:3.3.0'
 
     implementation 'com.huawei.hms:nearbyfullsdk:5.2.1.300'
-
+    implementation 'com.huawei.hms:scan:1.2.3.300'
+    implementation 'com.github.hedzr:android-file-chooser:v1.2.0-final'
     implementation 'com.yanzhenjie:permission:2.0.3'
 
 }

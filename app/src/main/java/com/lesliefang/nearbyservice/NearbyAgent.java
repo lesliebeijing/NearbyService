@@ -1,0 +1,424 @@
+package com.lesliefang.nearbyservice;
+
+import android.app.Activity;
+import android.content.Context;
+import android.content.Intent;
+import android.graphics.Bitmap;
+import android.graphics.Color;
+import android.net.Uri;
+import android.util.Log;
+import android.view.View;
+import android.widget.ImageView;
+import android.widget.ProgressBar;
+import android.widget.TextView;
+
+import com.huawei.hms.hmsscankit.ScanUtil;
+import com.huawei.hms.hmsscankit.WriterException;
+import com.huawei.hms.ml.scan.HmsBuildBitmapOption;
+import com.huawei.hms.ml.scan.HmsScan;
+import com.huawei.hms.ml.scan.HmsScanAnalyzerOptions;
+import com.huawei.hms.nearby.Nearby;
+import com.huawei.hms.nearby.StatusCode;
+import com.huawei.hms.nearby.discovery.BroadcastOption;
+import com.huawei.hms.nearby.discovery.ConnectCallback;
+import com.huawei.hms.nearby.discovery.ConnectInfo;
+import com.huawei.hms.nearby.discovery.ConnectResult;
+import com.huawei.hms.nearby.discovery.DiscoveryEngine;
+import com.huawei.hms.nearby.discovery.Policy;
+import com.huawei.hms.nearby.discovery.ScanEndpointCallback;
+import com.huawei.hms.nearby.discovery.ScanEndpointInfo;
+import com.huawei.hms.nearby.discovery.ScanOption;
+import com.huawei.hms.nearby.transfer.Data;
+import com.huawei.hms.nearby.transfer.DataCallback;
+import com.huawei.hms.nearby.transfer.TransferEngine;
+import com.huawei.hms.nearby.transfer.TransferStateUpdate;
+
+import java.io.File;
+import java.io.FileNotFoundException;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
+
+import static java.nio.charset.StandardCharsets.UTF_8;
+
+/**
+ * Created by fanglin on 2021/4/11.
+ * copy from https://github.com/HMS-Core/hms-nearby-demo/tree/master/NearbyFileTransfer
+ */
+public class NearbyAgent {
+    private static final String TAG = "NearbyService";
+    public static final int REQUEST_CODE_SCAN_ONE = 0X01;
+    private Context mContext;
+    private TransferEngine mTransferEngine;
+    private DiscoveryEngine mDiscoveryEngine;
+    private String mFileServiceId = "com.lesliefang.nearbyservice";
+    private List<File> mFiles = new ArrayList<>();
+    private String mRemoteEndpointId;
+    private String mRemoteEndpointName;
+    private String mEndpointName = android.os.Build.DEVICE;
+    private String mScanInfo;
+    private String mRcvedFilename;
+    private Bitmap mResultImage;
+    private TextView mScanHint;
+    private ImageView mBarcodeImage;
+    private String mFileName;
+    private ProgressBar mProgress;
+    private TextView mDescText;
+    private long mStartTime = 0;
+    private float mSpeed = 60;
+    private String mSpeedStr = "60";
+    private boolean isTransfer = false;
+    private Data incomingFile;
+
+    public NearbyAgent(Context context) {
+        mContext = context;
+        mDiscoveryEngine = Nearby.getDiscoveryEngine(context);
+        mTransferEngine = Nearby.getTransferEngine(context);
+
+        mProgress = ((Activity) mContext).findViewById(R.id.pb_main_download);
+        mProgress.setVisibility(View.INVISIBLE);
+        mDescText = ((Activity) mContext).findViewById(R.id.tv_main_desc);
+        mScanHint = ((Activity) mContext).findViewById(R.id.tv_scan_hint);
+        mBarcodeImage = ((Activity) mContext).findViewById(R.id.barcode_image);
+    }
+
+    public void sendFile(File file) {
+        init();
+        mFiles.add(file);
+        sendFilesInner();
+    }
+
+    public void sendFiles(List<File> files) {
+        init();
+        mFiles.clear();
+        mFiles.addAll(files);
+        sendFilesInner();
+    }
+
+    private void sendFilesInner() {
+        /* generate bitmap */
+        try {
+            //Generate the barcode.
+            HmsBuildBitmapOption options = new HmsBuildBitmapOption.Creator().setBitmapMargin(1).setBitmapColor(Color.BLACK).setBitmapBackgroundColor(Color.WHITE).create();
+            mResultImage = ScanUtil.buildBitmap(mEndpointName, HmsScan.QRCODE_SCAN_TYPE, 700, 700, options);
+            mScanHint.setVisibility(View.VISIBLE);
+            mBarcodeImage.setVisibility(View.VISIBLE);
+            mBarcodeImage.setImageBitmap(mResultImage);
+        } catch (WriterException e) {
+            Log.e(TAG, e.toString());
+        }
+        /* start broadcast */
+        BroadcastOption.Builder advBuilder = new BroadcastOption.Builder();
+        advBuilder.setPolicy(Policy.POLICY_P2P);
+        mDiscoveryEngine.startBroadcasting(mEndpointName, mFileServiceId, mConnCbSender, advBuilder.build());
+        Log.d(TAG, "Start Broadcasting.");
+    }
+
+    public void receiveFile() {
+        /* scan bitmap */
+        init();
+        HmsScanAnalyzerOptions options = new HmsScanAnalyzerOptions.Creator().setHmsScanTypes(HmsScan.QRCODE_SCAN_TYPE, HmsScan.DATAMATRIX_SCAN_TYPE).create();
+        ScanUtil.startScan((Activity) mContext, REQUEST_CODE_SCAN_ONE, options);
+    }
+
+    public void onScanResult(Intent data) {
+        if (data == null) {
+            mDescText.setText("Scan Failed.");
+            return;
+        }
+        /* save endpoint name */
+        HmsScan obj = data.getParcelableExtra(ScanUtil.RESULT);
+        mScanInfo = obj.getOriginalValue();
+        /* start scan*/
+        ScanOption.Builder scanBuilder = new ScanOption.Builder();
+        scanBuilder.setPolicy(Policy.POLICY_P2P);
+        mDiscoveryEngine.startScan(mFileServiceId, mDiscCb, scanBuilder.build());
+        Log.d(TAG, "Start Scan.");
+        mDescText.setText("Connecting to " + mScanInfo + "...");
+    }
+
+    private void sendOneFile() {
+        Data filenameMsg = null;
+        Data filePayload = null;
+
+        isTransfer = true;
+        Log.d(TAG, "Left " + mFiles.size() + " Files to send.");
+        if (mFiles.isEmpty()) {
+            Log.d(TAG, "All Files Done. Disconnect");
+            mDescText.setText("All Files Sent Successfully.");
+            mProgress.setVisibility(View.INVISIBLE);
+            mDiscoveryEngine.disconnectAll();
+            isTransfer = false;
+            return;
+        }
+
+        try {
+            mFileName = mFiles.get(0).getName();
+            filePayload = Data.fromFile(mFiles.get(0));
+            mFiles.remove(0);
+        } catch (FileNotFoundException e) {
+            Log.e(TAG, "File not found", e);
+            return;
+        }
+        filenameMsg = Data.fromBytes(mFileName.getBytes(StandardCharsets.UTF_8));
+        Log.d(TAG, "Send filename: " + mFileName);
+        mTransferEngine.sendData(mRemoteEndpointId, filenameMsg);
+        Log.d(TAG, "Send Payload.");
+        mTransferEngine.sendData(mRemoteEndpointId, filePayload);
+    }
+
+    private ScanEndpointCallback mDiscCb =
+            new ScanEndpointCallback() {
+                @Override
+                public void onFound(String endpointId, ScanEndpointInfo discoveryEndpointInfo) {
+                    if (discoveryEndpointInfo.getName().equals(mScanInfo)) {
+                        Log.d(TAG, "Found endpoint:" + discoveryEndpointInfo.getName() + ". Connecting.");
+                        mDiscoveryEngine.requestConnect(mEndpointName, endpointId, mConnCbRcver);
+                    }
+                }
+
+                @Override
+                public void onLost(String endpointId) {
+                    Log.d(TAG, "Lost endpoint.");
+                }
+            };
+
+    private ConnectCallback mConnCbSender =
+            new ConnectCallback() {
+                @Override
+                public void onEstablish(String endpointId, ConnectInfo connectionInfo) {
+                    Log.d(TAG, "Accept connection.");
+                    mDiscoveryEngine.acceptConnect(endpointId, mDataCbSender);
+                    mRemoteEndpointName = connectionInfo.getEndpointName();
+                    mRemoteEndpointId = endpointId;
+                }
+
+                @Override
+                public void onResult(String endpointId, ConnectResult result) {
+                    if (result.getStatus().getStatusCode() == StatusCode.STATUS_SUCCESS) {
+                        Log.d(TAG, "Connection Established. Stop discovery. Start to send file.");
+                        mDiscoveryEngine.stopScan();
+                        mDiscoveryEngine.stopBroadcasting();
+                        sendOneFile();
+                        mScanHint.setVisibility(View.INVISIBLE);
+                        mBarcodeImage.setVisibility(View.INVISIBLE);
+                        mDescText.setText("Sending file " + mFileName + " to " + mRemoteEndpointName + ".");
+                        mProgress.setVisibility(View.VISIBLE);
+                    }
+                }
+
+                @Override
+                public void onDisconnected(String endpointId) {
+                    Log.d(TAG, "Disconnected.");
+                    if (isTransfer == true) {
+                        mProgress.setVisibility(View.INVISIBLE);
+                        mDescText.setText("Connection lost.");
+                    }
+                }
+            };
+
+    private DataCallback mDataCbSender =
+            new DataCallback() {
+                @Override
+                public void onReceived(String endpointId, Data data) {
+                    if (data.getType() == Data.Type.BYTES) {
+                        String msg = new String(data.asBytes(), UTF_8);
+                        if (msg.equals("Receive Success")) {
+                            Log.d(TAG, "Received ACK. Send next.");
+                            sendOneFile();
+                        }
+                    }
+                }
+
+                @Override
+                public void onTransferUpdate(String string, TransferStateUpdate update) {
+                    if (update.getStatus() == TransferStateUpdate.Status.TRANSFER_STATE_SUCCESS) {
+                    } else if (update.getStatus() == TransferStateUpdate.Status.TRANSFER_STATE_IN_PROGRESS) {
+                        showProgressSpeed(update);
+                    } else if (update.getStatus() == TransferStateUpdate.Status.TRANSFER_STATE_FAILURE) {
+                        Log.d(TAG, "Transfer failed.");
+                    } else {
+                        Log.d(TAG, "Transfer cancelled.");
+                    }
+                }
+            };
+
+
+    private ConnectCallback mConnCbRcver =
+            new ConnectCallback() {
+                @Override
+                public void onEstablish(String endpointId, ConnectInfo connectionInfo) {
+                    Log.d(TAG, "Accept connection.");
+                    mRemoteEndpointName = connectionInfo.getEndpointName();
+                    mRemoteEndpointId = endpointId;
+                    mDiscoveryEngine.acceptConnect(endpointId, mDataCbRcver);
+                }
+
+                @Override
+                public void onResult(String endpointId, ConnectResult result) {
+                    if (result.getStatus().getStatusCode() == StatusCode.STATUS_SUCCESS) {
+                        Log.d(TAG, "Connection Established. Stop Discovery.");
+                        mDiscoveryEngine.stopBroadcasting();
+                        mDiscoveryEngine.stopScan();
+                        mDescText.setText("Connected.");
+                    }
+                }
+
+                @Override
+                public void onDisconnected(String endpointId) {
+                    Log.d(TAG, "Disconnected.");
+                    if (isTransfer == true) {
+                        mProgress.setVisibility(View.INVISIBLE);
+                        mDescText.setText("Connection lost.");
+                    }
+                }
+            };
+
+    private DataCallback mDataCbRcver =
+            new DataCallback() {
+                @Override
+                public void onReceived(String endpointId, Data data) {
+                    if (data.getType() == Data.Type.BYTES) {
+                        String msg = new String(data.asBytes(), UTF_8);
+                        mRcvedFilename = msg;
+                        Log.d(TAG, "received filename: " + mRcvedFilename);
+                        isTransfer = true;
+                        mDescText.setText("Receiving file " + mRcvedFilename + " from " + mRemoteEndpointName + ".");
+                        mProgress.setVisibility(View.VISIBLE);
+                    } else if (data.getType() == Data.Type.FILE) {
+                        incomingFile = data;
+                    } else {
+                        Log.d(TAG, "received stream. ");
+                    }
+                }
+
+                @Override
+                public void onTransferUpdate(String string, TransferStateUpdate update) {
+                    if (update.getStatus() == TransferStateUpdate.Status.TRANSFER_STATE_SUCCESS) {
+                    } else if (update.getStatus() == TransferStateUpdate.Status.TRANSFER_STATE_IN_PROGRESS) {
+                        showProgressSpeed(update);
+                        if (update.getBytesTransferred() == update.getTotalBytes()) {
+                            Log.d(TAG, "File transfer done. Rename File.");
+                            renameFile();
+                            Log.d(TAG, "Send Ack.");
+                            mDescText.setText("Transfer success. Speed: " + mSpeedStr + "MB/s. \nView the File at /Sdcard/Download/Nearby");
+                            mTransferEngine.sendData(mRemoteEndpointId, Data.fromBytes("Receive Success".getBytes(StandardCharsets.UTF_8)));
+                            isTransfer = false;
+                        }
+                    } else if (update.getStatus() == TransferStateUpdate.Status.TRANSFER_STATE_FAILURE) {
+                        Log.d(TAG, "Transfer failed.");
+                    } else {
+                        Log.d(TAG, "Transfer cancelled.");
+                    }
+                }
+            };
+
+    private void renameFile() {
+        if (incomingFile == null) {
+            Log.d(TAG, "incomingFile is null");
+            return;
+        }
+        File rawFile = incomingFile.asFile().asJavaFile();
+        Log.d(TAG, "raw file: " + rawFile.getAbsolutePath());
+        File targetFileName = new File(rawFile.getParentFile(), mRcvedFilename);
+        Log.d(TAG, "rename to : " + targetFileName.getAbsolutePath());
+        Uri uri = incomingFile.asFile().asUri();
+        if (uri == null) {
+            boolean result = rawFile.renameTo(targetFileName);
+            if (!result) {
+                Log.e(TAG, "rename failed");
+            } else {
+                Log.e(TAG, "rename Succeeded ");
+            }
+        } else {
+            try {
+                openStream(uri, targetFileName);
+            } catch (IOException e) {
+                Log.e(TAG, e.toString());
+            } finally {
+                delFile(uri, rawFile);
+            }
+        }
+    }
+
+    private void openStream(Uri uri, File targetFileName) throws IOException {
+        InputStream in = mContext.getContentResolver().openInputStream(uri);
+        Log.e(TAG, "open input stream successfuly");
+        try {
+            copyStream(in, new FileOutputStream(targetFileName));
+            Log.e(TAG, "copyStream successfuly");
+        } catch (IOException e) {
+            Log.e(TAG, e.toString());
+        } finally {
+            in.close();
+        }
+    }
+
+    private void copyStream(InputStream in, OutputStream out) throws IOException {
+        try {
+            byte[] buffer = new byte[1024];
+            int read;
+            while ((read = in.read(buffer)) != -1) {
+                out.write(buffer, 0, read);
+            }
+            out.flush();
+        } finally {
+            out.close();
+        }
+    }
+
+    private void delFile(Uri uri, File payloadfile) {
+        // Delete the original file.
+        mContext.getContentResolver().delete(uri, null, null);
+        if (!payloadfile.exists()) {
+            Log.e(TAG, "delete original file by uri successfully");
+        } else {
+            Log.e(TAG, "delete  original file by uri failed and try to delete it by File delete");
+            payloadfile.delete();
+            if (payloadfile.exists()) {
+                Log.e(TAG, "fail to delete original file");
+            } else {
+                Log.e(TAG, "delete original file successfully");
+            }
+        }
+    }
+
+    private void showProgressSpeed(TransferStateUpdate update) {
+        long transferredBytes = update.getBytesTransferred();
+        long totalBytes = update.getTotalBytes();
+        long curTime = System.currentTimeMillis();
+        Log.d(TAG, "Transfer in progress. Transferred Bytes: "
+                + transferredBytes + " Total Bytes: " + totalBytes);
+        mProgress.setProgress((int) (transferredBytes * 100 / totalBytes));
+        if (mStartTime == 0) {
+            mStartTime = curTime;
+        }
+
+        if (curTime != mStartTime) {
+            mSpeed = ((float) transferredBytes) / ((float) (curTime - mStartTime)) / 1000;
+            java.text.DecimalFormat myformat = new java.text.DecimalFormat("0.00");
+            mSpeedStr = myformat.format(mSpeed);
+            mDescText.setText("Transfer in Progress. Speed: " + mSpeedStr + "MB/s.");
+        }
+
+        if (transferredBytes == totalBytes) {
+            mStartTime = 0;
+        }
+    }
+
+    private void init() {
+        mProgress.setProgress(0);
+        mProgress.setVisibility(View.INVISIBLE);
+        mDescText.setText("");
+        mScanHint.setVisibility(View.INVISIBLE);
+        mBarcodeImage.setVisibility(View.INVISIBLE);
+        mDiscoveryEngine.disconnectAll();
+        mDiscoveryEngine.stopScan();
+        mDiscoveryEngine.stopBroadcasting();
+        mFiles.clear();
+    }
+}
