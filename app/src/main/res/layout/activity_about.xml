@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:gravity="center_horizontal"
+    android:orientation="vertical"
+    android:padding="10dp"
+    tools:context=".AboutActivity">
+
+    <TextView
+        android:id="@+id/tv_huawei"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="基于华为近距离通信服务开发\nhttps://github.com/HMS-Core/hms-nearby-demo/tree/master/NearbyFileTransfer" />
+
+
+    <ImageView
+        android:id="@+id/img_about"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:scaleType="fitCenter"
+        android:src="@drawable/nearby" />
+
+    <TextView
+        android:id="@+id/tv_use"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="10dp"
+        android:text="使用方法：\n1.发送方点击发送选择文件显示二维码\n2.接收方点击接收文件，扫描二维码接收文件\n3.也可以选择文件后从系统分享调起应用" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="50dp"
+        android:text="author:青岛房老师 lesliefang 简书:https://www.jianshu.com/u/59bd8b2792ac\t\tfl_beijing@126.com" />
+</LinearLayout>
